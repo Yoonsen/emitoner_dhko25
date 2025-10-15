@@ -130,13 +130,6 @@ def build_records(lines: List[str]) -> List[Dict[str, Any]]:
 def build_user_msg(batch: List[Dict[str, Any]]) -> str:
     # Modellvennlig, deterministisk struktur
     s = []
-    s.append(
-        "Annotér linjene. Returnér KUN én JSON:\n"
-        '{"items":[{"id":<int>,"kategori":"bokstavelig|metaforisk|uklar",'
-        '"karakteristikker":[<str>,...],"begrunnelse":"<=15 ord","confidence":0.0-1.0}, ...]}\n'
-        "Behandle linjene uavhengig og behold id.\n"
-        "Linjer:"
-    )
     for r in batch:
         s.append(f'{r["id"]} | {r["fragment"]}')
     return "\n".join(s)
