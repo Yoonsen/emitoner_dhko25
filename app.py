@@ -1,18 +1,18 @@
 # app.py
-import json, io, csv, math, time
-from typing import List
+import json, io, csv, time, random
+from typing import List, Dict, Any
 import streamlit as st
 from openai import OpenAI
 
 st.set_page_config(page_title="Emitoner", layout="wide")
-st.title("Emitoner – batchannotering")
 
-
+# ---------- Adgang (må ligge helt øverst) ----------
 def gate():
-    if st.session_state.get("authed"): return
+    if st.session_state.get("authed"):
+        return
     pw = st.text_input("Passord", type="password")
     if st.button("Logg inn"):
-        if pw == st.secrets["APP_PASSWORD"]:
+        if pw == st.secrets.get("APP_PASSWORD", ""):
             st.session_state["authed"] = True
             st.rerun()
         else:
@@ -20,162 +20,245 @@ def gate():
     st.stop()
 gate()
 
-# --- Konfig ---
-API_KEY = st.secrets["OPENAI_API_KEY"]  # legg nøkkelen i Secrets på share.streamlit
-MODEL = st.selectbox("Modell", ["gpt-4o-mini", "gpt-5-mini"], index=0)
-BATCH_SIZE = st.number_input("Batch-størrelse (linjer per kall)", 10, 500, 100, 10)
-TEMP = st.slider("temperature", 0.0, 1.0, 0.0, 0.1)
-MAX_WORDS = 25
+st.title("Emitoner – batchannotering")
 
+# ---------- Konfig ----------
+API_KEY = st.secrets["OPENAI_API_KEY"]
 client = OpenAI(api_key=API_KEY)
 
+colA, colB, colC, colD = st.columns([1.1,1,1,1.2])
+with colA:
+    MODEL = st.selectbox("Modell", ["gpt-4o-mini", "gpt-5-mini"], index=0)
+with colB:
+    BATCH_SIZE = st.number_input("Batch-størrelse", 10, 500, 100, 10)
+with colC:
+    TEMP = st.slider("temperature", 0.0, 1.0, 0.0, 0.1)
+with colD:
+    MAX_WORDS = st.number_input("Maks ord per linje", 5, 60, 25, 1)
 
-
-
+# ---------- Data inn ----------
 st.subheader("1) Data inn")
 src = st.radio("Kilde", ["Lim inn", "Last opp CSV/TSV"], horizontal=True)
 
-def normalize_lines(lines: List[str]) -> List[str]:
+def normalize_lines(lines: List[str], max_words: int) -> List[str]:
     out = []
     for ln in lines:
         ln = (ln or "").strip()
         if not ln:
             continue
-        # kutt til ~25 ord
         words = ln.split()
-        if len(words) > MAX_WORDS:
-            ln = " ".join(words[:MAX_WORDS])
+        if len(words) > max_words:
+            ln = " ".join(words[:max_words])
         out.append(ln)
-    # fjern duplikater
+    # fjern duplikater, behold rekkefølge
     return list(dict.fromkeys(out))
 
-lines = []
+lines: List[str] = []
 if src == "Lim inn":
-    txt = st.text_area("Én forekomst per linje", height=220, placeholder="fragment 1\nfragment 2\n...")
+    txt = st.text_area("Én forekomst per linje", height=220,
+                       placeholder="fragment 1\nfragment 2\n...")
     if txt:
-        lines = normalize_lines(txt.splitlines())
+        lines = normalize_lines(txt.splitlines(), MAX_WORDS)
 else:
-    up = st.file_uploader("Last opp .txt/.csv/.tsv (én forekomst per linje eller kolonne)", type=["txt","csv","tsv"])
+    up = st.file_uploader("Last opp .txt/.csv/.tsv (én forekomst per linje eller kolonne)",
+                          type=["txt","csv","tsv"])
     if up:
         if up.type.startswith("text") or up.name.endswith(".txt"):
-            lines = normalize_lines(up.read().decode("utf-8").splitlines())
+            lines = normalize_lines(up.read().decode("utf-8").splitlines(), MAX_WORDS)
         else:
             dialect = csv.excel if up.name.endswith(".csv") else csv.excel_tab
             reader = csv.reader(io.StringIO(up.read().decode("utf-8")), dialect=dialect)
+            cells = []
             for row in reader:
                 for cell in row:
-                    lines.append(cell)
-            lines = normalize_lines(lines)
+                    cells.append(cell)
+            lines = normalize_lines(cells, MAX_WORDS)
 
-st.caption(f"Fant {len(lines)} fragmenter (dupl/fyll kuttet). Maks {MAX_WORDS} ord per linje.")
+st.caption(f"Fant {len(lines)} fragmenter (dupl/blanke kuttet). Maks {MAX_WORDS} ord per linje.")
 
-
-
-
+# ---------- Instruks (system) ----------
 st.subheader("2) Instruks (prompt)")
 default_prompt = (
-    "Oppgave: For hver linje, klassifiser som ‘bokstavelig’ (vær/atmosfære) "
-    "eller ‘metaforisk’ (debatt/stemning osv.).\n"
-    "Format: Svar KUN som JSONL (én JSON per linje) med nøkler: "
-    '{"bruk":"bokstavelig|metaforisk","begrunnelse":"<=15 ord","confidence":0.0-1.0}\n'
-    "Viktig: Behandle linjene uavhengig, bruk KUN teksten i linjen."
+    "Du annoterer hvert fragment uavhengig (maks 25 ord brukt). "
+    "Kategoriser som ‘bokstavelig’ (vær/atmosfære) eller ‘metaforisk’ (debatt/stemning). "
+    "Gi også kort begrunnelse (≤15 ord) og confidence ∈ [0,1]. "
+    "Svar KUN som ÉN gyldig JSON med nøkkel 'items', der 'items' er en liste av objekter "
+    "{id, kategori/bruk, karakteristikker (kan være []), begrunnelse, confidence}. "
+    "Ingen forklarende tekst, ingen markdown."
 )
 prompt = st.text_area("System/oppgaveinstruks", value=default_prompt, height=160)
 
-st.subheader("3) Estimat & kjøring")
-approx_in = len(lines) * 40  # grovt anslag
-approx_out = len(lines) * 20
-st.write(f"Grovt tokenestimat: in ≈ {approx_in:,} · out ≈ {approx_out:,} · total ≈ {approx_in+approx_out:,}")
+# ---------- Testmodus ----------
+st.subheader("3) Estimat, test og kjøring")
+col1, col2, col3 = st.columns([1,1,1.2])
+with col1:
+    testmode = st.checkbox("🧪 Testmodus (kjør liten batch først)")
+with col2:
+    n_test = st.number_input("Antall linjer i test", 5, 100, 10, 1, disabled=not testmode)
+with col3:
+    shuffle = st.checkbox("Tilfeldig utvalg i test", value=True, disabled=not testmode)
 
-def chunks(xs, n):
+def choose_subset(all_lines: List[str]) -> List[str]:
+    if not testmode or not all_lines:
+        return all_lines
+    idx = list(range(len(all_lines)))
+    if shuffle:
+        random.shuffle(idx)
+    pick = sorted(idx[: int(n_test)])
+    return [all_lines[i] for i in pick]
+
+to_run = choose_subset(lines)
+
+approx_in = len(to_run) * 40   # grovt anslag
+approx_out = len(to_run) * 20
+st.write(f"Grovt tokenestimat for **denne kjøringen**: "
+         f"in ≈ {approx_in:,} · out ≈ {approx_out:,} · total ≈ {approx_in+approx_out:,}")
+
+# ---------- Hjelpere ----------
+def chunks(xs: List[Any], n: int):
     for i in range(0, len(xs), n):
         yield xs[i:i+n]
-
-run = st.button("Kjør annotering")
 
 @st.cache_data(show_spinner=False)
 def _ts():
     return time.strftime("%Y-%m-%dT%H-%M-%S")
 
-if run and lines:
+def build_records(lines: List[str]) -> List[Dict[str, Any]]:
+    # id = global rekkefølge i denne kjøringen
+    return [{"id": i+1, "fragment": frag} for i, frag in enumerate(lines)]
+
+def build_user_msg(batch: List[Dict[str, Any]]) -> str:
+    # Modellvennlig, deterministisk struktur
+    s = []
+    s.append(
+        "Annotér linjene. Returnér KUN én JSON:\n"
+        '{"items":[{"id":<int>,"kategori":"bokstavelig|metaforisk|uklar",'
+        '"karakteristikker":[<str>,...],"begrunnelse":"<=15 ord","confidence":0.0-1.0}, ...]}\n'
+        "Behandle linjene uavhengig og behold id.\n"
+        "Linjer:"
+    )
+    for r in batch:
+        s.append(f'{r["id"]} | {r["fragment"]}')
+    return "\n".join(s)
+
+def parse_items(raw_text: str) -> List[Dict[str, Any]]:
+    data = json.loads(raw_text)
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        raise ValueError("JSON mangler 'items' som liste.")
+    return items
+
+# ---------- Kjøring ----------
+run = st.button("Kjør annotering")
+if run and to_run:
     st.info("Starter kjøring…")
-    all_json = []
+    all_rows: List[Dict[str, Any]] = []
+    recs = build_records(to_run)
+    total = len(recs)
     progress = st.progress(0.0)
     status = st.empty()
     done = 0
+    batch_counter = 0
 
-    for batch in chunks(lines, BATCH_SIZE):
-        # Pakk batch til en enkelt chat-forespørsel
-        # Vi ber modellen returnere JSONL, én linje per input.
-        user_msg = "Annotér følgende linjer som beskrevet. Returner Nøyaktig N JSON-objekter i JSONL, i samme rekkefølge.\n"
-        for i, ln in enumerate(batch, 1):
-            user_msg += f"{i}. {ln}\n"
+    for batch in chunks(recs, int(BATCH_SIZE)):
+        batch_counter += 1
+        user_msg = build_user_msg(batch)
 
         try:
             r = client.chat.completions.create(
                 model=MODEL,
-                temperature=TEMP,
+                temperature=TEMP,          # hold 0 for stabilitet
+                response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": user_msg},
-                ]
+                ],
             )
             text = r.choices[0].message.content.strip()
-            # Parse JSONL
-            parsed = []
-            for line in text.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                # fiks ev. trailing komma/markdown
-                line = line.strip("`").strip()
-                obj = json.loads(line)
-                parsed.append(obj)
 
-            # Sikre samme lengde
-            if len(parsed) != len(batch):
-                # fallback: pad med uklar
-                for _ in range(len(batch) - len(parsed)):
-                    parsed.append({"bruk":"uklar","begrunnelse":"","confidence":0.0})
-            # berik med input
-            for frag, lab in zip(batch, parsed):
-                lab["fragment"] = frag
-                lab["model"] = MODEL
-                lab["temperature"] = TEMP
-                all_json.append(lab)
+            try:
+                items = parse_items(text)
+            except Exception as e_json:
+                with st.expander(f"JSON-feil (batch {batch_counter}) – rå svar"):
+                    st.code(text)
+                raise e_json
 
-        except Exception as e:
-            # marker feil for denne batchen
-            for frag in batch:
-                all_json.append({
-                    "fragment": frag,
+            # Map id -> fragment for berikelse
+            frag_map = {r["id"]: r["fragment"] for r in batch}
+
+            # Normaliser og berik
+            for it in items:
+                rid = it.get("id")
+                row = {
+                    "id": rid,
+                    "fragment": frag_map.get(rid, ""),
                     "model": MODEL,
                     "temperature": TEMP,
-                    "bruk": "feil",
+                    # tillat 'kategori' eller 'bruk'
+                    "kategori": it.get("kategori") or it.get("bruk") or "",
+                    "karakteristikker": it.get("karakteristikker", []),
+                    "begrunnelse": it.get("begrunnelse", ""),
+                    "confidence": it.get("confidence", None),
+                }
+                all_rows.append(row)
+
+            # Hvis modellen ikke returnerte alle id-ene, pad som feil
+            got_ids = {it.get("id") for it in items}
+            for r in batch:
+                if r["id"] not in got_ids:
+                    all_rows.append({
+                        "id": r["id"], "fragment": r["fragment"],
+                        "model": MODEL, "temperature": TEMP,
+                        "kategori": "feil", "karakteristikker": [],
+                        "begrunnelse": "manglende rad i svar", "confidence": 0.0
+                    })
+
+        except Exception as e:
+            # Marker hele batchen som feil
+            for r in batch:
+                all_rows.append({
+                    "id": r["id"], "fragment": r["fragment"],
+                    "model": MODEL, "temperature": TEMP,
+                    "kategori": "feil",
+                    "karakteristikker": [],
                     "begrunnelse": str(e),
                     "confidence": 0.0
                 })
 
         done += len(batch)
-        progress.progress(done / len(lines))
-        status.write(f"Ferdig: {done}/{len(lines)}")
+        progress.progress(done / total)
+        status.write(f"Ferdig: {done}/{total}")
+
+        # Testmodus: stopp etter første batch
+        if testmode:
+            break
 
     ts = _ts()
+
+    # Eksport (kun ved full kjøring eller hvis man ønsker i test også – her viser vi uansett)
     # JSONL
     jsonl_buf = io.StringIO()
-    for obj in all_json:
+    for obj in all_rows:
         jsonl_buf.write(json.dumps(obj, ensure_ascii=False) + "\n")
     jsonl_bytes = jsonl_buf.getvalue().encode("utf-8")
 
     # CSV
     csv_buf = io.StringIO()
-    fieldnames = sorted({k for o in all_json for k in o.keys()})
+    fieldnames = sorted({k for o in all_rows for k in o.keys()})
     writer = csv.DictWriter(csv_buf, fieldnames=fieldnames)
     writer.writeheader()
-    for o in all_json:
-        writer.writerow({k: o.get(k, "") for k in fieldnames})
+    for o in all_rows:
+        # flate ut lister i CSV
+        o2 = {**o}
+        if isinstance(o2.get("karakteristikker"), list):
+            o2["karakteristikker"] = "|".join(o2["karakteristikker"])
+        writer.writerow({k: o2.get(k, "") for k in fieldnames})
     csv_bytes = csv_buf.getvalue().encode("utf-8")
 
     st.success("Kjøring ferdig ✅")
-    st.download_button("Last ned JSONL", data=jsonl_bytes, file_name=f"emitoner_{ts}.jsonl", mime="application/jsonl")
-    st.download_button("Last ned CSV", data=csv_bytes, file_name=f"emitoner_{ts}.csv", mime="text/csv")
+    if testmode:
+        st.info("Testmodus: dette var kun første batch.")
+    st.download_button("Last ned JSONL", data=jsonl_bytes,
+                       file_name=f"emitoner_{ts}.jsonl", mime="application/jsonl")
+    st.download_button("Last ned CSV", data=csv_bytes,
+                       file_name=f"emitoner_{ts}.csv", mime="text/csv")
