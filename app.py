@@ -78,14 +78,22 @@ st.caption(f"Fant {len(lines)} fragmenter (dupl/blanke kuttet). Maks {MAX_WORDS}
 
 # ---------- Instruks (system) ----------
 st.subheader("2) Instruks (prompt)")
-default_prompt = (
-    "Du annoterer hvert fragment uavhengig (maks 25 ord brukt). "
-    "Kategoriser som ‘bokstavelig’ (vær/atmosfære) eller ‘metaforisk’ (debatt/stemning). "
-    "Gi også kort begrunnelse (≤15 ord) og confidence ∈ [0,1]. "
-    "Svar KUN som ÉN gyldig JSON med nøkkel 'items', der 'items' er en liste av objekter "
-    "{id, kategori/bruk, karakteristikker (kan være []), begrunnelse, confidence}. "
-    "Ingen forklarende tekst, ingen markdown."
-)
+default_prompt = """
+Du annoterer hvert fragment uavhengig (maks 25 ord brukt). Kategoriser som:
+‘bokstavelig’ (vær/atmosfære/klimatiske forhold) 
+‘metaforisk’ (debatt/stemning/klimaet i debatten). 
+Gi også kort begrunnelse (≤15 ord) og confidence ∈ [0,1].
+Returner KUN ÉN gyldig JSON med nøkkelen "items", der "items" er en liste av objekter i dette formatet:
+{"id": '<int>',
+ "kategori": "<kategori>",
+ "karakteristikker": ["<andre relevante trekk"],
+ "begrunnelse": "<kort forklaring (≤15 ord)>",
+ "confidence": '<0–1>' 
+
+ Behandle linjene uavhengig, behold id, og ikke legg til forklarende tekst eller markdown — kun selve JSON-objektet.
+
+ """
+
 prompt = st.text_area("System/oppgaveinstruks", value=default_prompt, height=160)
 
 # ---------- Testmodus ----------
