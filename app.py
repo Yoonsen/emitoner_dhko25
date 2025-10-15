@@ -7,6 +7,19 @@ from openai import OpenAI
 st.set_page_config(page_title="Emitoner", layout="wide")
 st.title("Emitoner – batchannotering")
 
+
+def gate():
+    if st.session_state.get("authed"): return
+    pw = st.text_input("Passord", type="password")
+    if st.button("Logg inn"):
+        if pw == st.secrets["APP_PASSWORD"]:
+            st.session_state["authed"] = True
+            st.rerun()
+        else:
+            st.error("Feil passord.")
+    st.stop()
+gate()
+
 # --- Konfig ---
 API_KEY = st.secrets["OPENAI_API_KEY"]  # legg nøkkelen i Secrets på share.streamlit
 MODEL = st.selectbox("Modell", ["gpt-4o-mini", "gpt-5-mini"], index=0)
