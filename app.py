@@ -233,6 +233,23 @@ if run and to_run:
         if testmode:
             break
 
+
+    # Velg kolonnerekkefølge
+    cols = ["id","fragment","kategori","karakteristikker","begrunnelse",
+            "confidence","model","temperature"]
+    fieldnames = [c for c in cols if c in all_rows[0]]  # faller tilbake på eksisterende
+    
+    # Oppsummering
+    from collections import Counter
+    counts = Counter([r.get("kategori","") for r in all_rows])
+    st.table({"kategori": list(counts.keys()), "antall": list(counts.values())})
+    
+    # (valgfritt) enkel stolpe
+    import pandas as pd
+    dfc = pd.DataFrame({"kategori": list(counts.keys()), "antall": list(counts.values())})
+    st.bar_chart(dfc.set_index("kategori"))
+
+    
     ts = _ts()
 
     # Eksport (kun ved full kjøring eller hvis man ønsker i test også – her viser vi uansett)
