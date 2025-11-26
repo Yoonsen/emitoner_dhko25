@@ -28,6 +28,7 @@ def gate():
             st.error("Feil passord.")
     st.stop()
 
+gate()
 
 st.title("Luminoner – batchannotering")
 
