@@ -3,37 +3,33 @@ import json, io, csv, time, random
 from typing import List, Dict, Any
 import streamlit as st
 from openai import OpenAI
+import os
 
 st.set_page_config(page_title="Luminoner / emitoner", layout="wide")
 
-# ---------- Adgang ----------
-import os
 
-def gate():
-    if st.session_state.get("authed"):
-        return
+def secret_or_env(key: str, default: Any = None):
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.getenv(key, default)
 
-    APP_PASSWORD = (
-        st.secrets.get("APP_PASSWORD")
-        if "APP_PASSWORD" in st.secrets
-        else os.getenv("APP_PASSWORD", "lokaltest")   # fallback lokalt
-    )
 
-    pw = st.text_input("Passord", type="password")
-    if st.button("Logg inn"):
-        if pw == APP_PASSWORD:
-            st.session_state["authed"] = True
-            st.rerun()
-        else:
-            st.error("Feil passord.")
-    st.stop()
+CATCH_ALL_VALUE = "uten-relevans"
+INITIAL_CATEGORY_FIELDS = [
+    {"id": 0, "label": "kategori", "values": "bokstavelig, metaforisk"},
+]
 
-gate()
 
 st.title("Luminoner – batchannotering")
 
 # ---------- Konfig ----------
-API_KEY = st.secrets["OPENAI_API_KEY"]
+API_KEY = secret_or_env("OPENAI_API_KEY")
+if not API_KEY:
+    st.error("Manglende OPENAI_API_KEY i .streamlit/secrets.toml eller miljøvariabel.")
+    st.stop()
 client = OpenAI(api_key=API_KEY)
 
 colA, colB, colC, colD = st.columns([1.2, 1, 1, 1])
@@ -51,16 +47,110 @@ with colC:
 with colD:
     MAX_WORDS = st.number_input("Maks ord per linje", 5, 60, 25, 1)
 
-categories_str = st.text_input(
-    "Kategorier (kommaseparert for feltet «kategori»)",
-    "bokstavelig, metaforisk",
-    help="Du kan f.eks. bruke «personlig, upersonlig, uklar» for personreferanser."
+st.subheader("Kategorioppsett (kolonner)")
+st.caption(
+    "Del opp annoteringen i flere felter (f.eks. «sport», «økonomi», «konflikt»). "
+    "Hvert felt får et eget sett med lovlige verdier."
 )
-CATEGORIES = [c.strip() for c in categories_str.split(",") if c.strip()]
-if CATEGORIES:
-    categories_display = ", ".join(f'"{c}"' for c in CATEGORIES)
-else:
-    categories_display = '"kategori1", "kategori2"'
+st.caption(
+    f"Verdien «{CATCH_ALL_VALUE}» legges automatisk til alle felter som en catch-all for "
+    "fragmenter uten treff."
+)
+
+if "category_field_entries" not in st.session_state:
+    st.session_state["category_field_entries"] = [
+        dict(entry) for entry in INITIAL_CATEGORY_FIELDS
+    ]
+    st.session_state["category_field_counter"] = len(INITIAL_CATEGORY_FIELDS)
+
+entries = st.session_state["category_field_entries"]
+
+action_cols = st.columns([0.25, 0.75])
+with action_cols[0]:
+    if st.button("➕ Legg til felt", use_container_width=True):
+        next_id = st.session_state.get("category_field_counter", len(entries))
+        entries.append({"id": next_id, "label": "", "values": ""})
+        st.session_state["category_field_counter"] = next_id + 1
+with action_cols[1]:
+    st.caption("Bruk «Fjern» for å ta bort et felt (minst ett felt må eksistere).")
+
+category_fields: List[Dict[str, Any]] = []
+used_keys = set()
+for idx, entry in enumerate(entries):
+    col_label, col_values, col_remove = st.columns([1, 2, 0.25])
+    label_val = col_label.text_input(
+        "Feltnavn",
+        value=entry.get("label", ""),
+        placeholder="f.eks. Sport",
+        key=f"category_field_label_{entry['id']}",
+    ).strip()
+    values_val = col_values.text_area(
+        "Tillatte verdier (kommaseparert)",
+        value=entry.get("values", ""),
+        placeholder="fotball, svømming",
+        help="Separér alternativene med komma eller linjeskift.",
+        height=80,
+        key=f"category_field_values_{entry['id']}",
+    )
+    if col_remove.button(
+        "Fjern",
+        key=f"remove_category_field_{entry['id']}",
+        use_container_width=True,
+        disabled=len(entries) == 1,
+    ):
+        del entries[idx]
+        st.rerun()
+
+    display_label = label_val or f"Felt {idx + 1}"
+    field_key = display_label
+    base_key = field_key
+    suffix = 2
+    while field_key in used_keys:
+        field_key = f"{base_key}_{suffix}"
+        suffix += 1
+    used_keys.add(field_key)
+
+    tokens: List[str] = []
+    for line in values_val.splitlines():
+        tokens.extend(t.strip() for t in line.split(","))
+    field_values = [t for t in tokens if t]
+    if CATCH_ALL_VALUE not in field_values:
+        field_values.append(CATCH_ALL_VALUE)
+
+    category_fields.append(
+        {
+            "label": display_label,
+            "key": field_key,
+            "values": field_values,
+        }
+    )
+
+
+def _values_display(values: List[str]) -> str:
+    return ", ".join(f'"{v}"' for v in values) if values else '"verdi1", "verdi2"'
+
+
+field_names_display = ", ".join(f'"{c["label"]}"' for c in category_fields)
+if not field_names_display:
+    field_names_display = '"kategori"'
+field_rules_lines = [
+    f'- Feltet "{c["key"]}" skal være én av: {_values_display(c["values"])}.'
+    for c in category_fields
+]
+if not field_rules_lines:
+    field_rules_lines = [
+        '- Feltet "kategori" skal være én av: "kategori1", "kategori2".'
+    ]
+field_rules_lines.append(
+    f'- Hvis ingen kode passer i et felt, bruk verdien "{CATCH_ALL_VALUE}".'
+)
+field_rules_text = "\n".join(field_rules_lines)
+json_field_lines = "\n".join(
+    f'    "{c["key"]}": <én av {_values_display(c["values"])}>,'
+    for c in category_fields
+)
+if not json_field_lines:
+    json_field_lines = '    "kategori": <én av "kategori1", "kategori2">,'  # fallback
 
 # ---------- Data inn ----------
 st.subheader("1) Data inn")
@@ -117,8 +207,10 @@ st.subheader("2) Instruks (oppgavebeskrivelse)")
 default_user_prompt = f"""
 Du annoterer hvert tekstfragment uavhengig.
 
-Bruk feltet "kategori" til å tildele én av følgende koder:
-{categories_display}
+Bruk kategorifeltene {field_names_display} til å fordele én kode per felt (f.eks.
+sport/økonomi/konflikt).
+
+Hvis ingen kode passer i et felt, bruk verdien "{CATCH_ALL_VALUE}".
 
 Bruk feltet "karakteristikker" til 0–3 korte stikkord som sier noe om fenomenet
 du undersøker (f.eks. «personlig», «offentlig», «historisk», «ironisk», osv.).
@@ -126,7 +218,7 @@ du undersøker (f.eks. «personlig», «offentlig», «historisk», «ironisk»,
 Du kan bruke denne appen til f.eks.:
 - forskjell på fysisk klima vs. debattklima
 - typer personreferanser
-- andre typer luminoner med faste koder i "kategori".
+- andre typer luminoner med faste koder per felt.
 """.strip()
 
 user_prompt = st.text_area(
@@ -140,16 +232,15 @@ Formatkrav (viktig):
 
 - Du får linjer på formen "<id> | <fragment>".
 - Du skal behandle hvert fragment uavhengig.
-- Feltet "kategori" skal være én av: {categories_display}.
+{field_rules_text}
 - Du skal alltid svare med KUN ÉN gyldig JSON-struktur med nøkkelen "items".
 - "items" skal være en liste med objekter på denne formen:
 
   {{
     "id": <int>,                         // samme id som i input
-    "kategori": <én av {categories_display}>,
+{json_field_lines}
     "karakteristikker": ["...", "..."],  // 0–3 korte stikkord
-    "begrunnelse": "<maks 15 ord>",
-    "confidence": <tall mellom 0 og 1>   // ikke streng, men et tall
+    "begrunnelse": "<maks 15 ord>"
   }}
 
 - Ikke legg til annen tekst, forklaringer eller markdown utenfor dette ene JSON-objektet.
@@ -285,43 +376,41 @@ if run and to_run:
                     "fragment": frag_map.get(rid, ""),
                     "model": MODEL,
                     "temperature": TEMP,
-                    "kategori": it.get("kategori") or it.get("bruk") or "",
                     "karakteristikker": it.get("karakteristikker", []),
                     "begrunnelse": it.get("begrunnelse", ""),
-                    "confidence": it.get("confidence", None),
                 }
+                for field in category_fields:
+                    row[field["key"]] = it.get(field["key"], "")
                 all_rows.append(row)
 
             got_ids = {it.get("id") for it in items}
             for r in batch:
                 if r["id"] not in got_ids:
-                    all_rows.append(
-                        {
-                            "id": r["id"],
-                            "fragment": r["fragment"],
-                            "model": MODEL,
-                            "temperature": TEMP,
-                            "kategori": "feil",
-                            "karakteristikker": [],
-                            "begrunnelse": "manglende rad i svar",
-                            "confidence": 0.0,
-                        }
-                    )
-
-        except Exception as e:
-            for r in batch:
-                all_rows.append(
-                    {
+                    row = {
                         "id": r["id"],
                         "fragment": r["fragment"],
                         "model": MODEL,
                         "temperature": TEMP,
-                        "kategori": "feil",
                         "karakteristikker": [],
-                        "begrunnelse": str(e),
-                        "confidence": 0.0,
+                        "begrunnelse": "manglende rad i svar",
                     }
-                )
+                    for field in category_fields:
+                        row[field["key"]] = "feil"
+                    all_rows.append(row)
+
+        except Exception as e:
+            for r in batch:
+                row = {
+                    "id": r["id"],
+                    "fragment": r["fragment"],
+                    "model": MODEL,
+                    "temperature": TEMP,
+                    "karakteristikker": [],
+                    "begrunnelse": str(e),
+                }
+                for field in category_fields:
+                    row[field["key"]] = "feil"
+                all_rows.append(row)
 
         done += len(batch)
         progress.progress(done / total)
@@ -336,11 +425,18 @@ if run and to_run:
         from collections import Counter
         import pandas as pd
 
-        counts = Counter([r.get("kategori", "") for r in all_rows])
-        st.table({"kategori": list(counts.keys()), "antall": list(counts.values())})
-
-        dfc = pd.DataFrame({"kategori": list(counts.keys()), "antall": list(counts.values())})
-        st.bar_chart(dfc.set_index("kategori"))
+        if not category_fields:
+            st.warning("Ingen kategorifelter definert – oppdater oppsettet over.")
+        else:
+            for cat in category_fields:
+                counts = Counter([r.get(cat["key"], "") for r in all_rows])
+                st.markdown(f"**Fordeling for {cat['label']}**")
+                st.table({"verdi": list(counts.keys()), "antall": list(counts.values())})
+                if counts:
+                    dfc = pd.DataFrame(
+                        {"verdi": list(counts.keys()), "antall": list(counts.values())}
+                    )
+                    st.bar_chart(dfc.set_index("verdi"))
 
         ts = _ts()
 
