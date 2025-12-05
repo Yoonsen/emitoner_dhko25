@@ -19,8 +19,20 @@ def secret_or_env(key: str, default: Any = None):
 
 CATCH_ALL_VALUE = "uten-relevans"
 INITIAL_CATEGORY_FIELDS = [
-    {"id": 0, "label": "kategori", "values": "bokstavelig, metaforisk"},
+    {
+        "id": 0,
+        "label": "kategori",
+        "values": "bokstavelig, metaforisk",
+        "mode": "unique",
+    },
 ]
+
+META_ROW_INDEX_KEY = "__luminoner_input_index"
+META_RECORD_ID_KEY = "__luminoner_internal_id"
+CATEGORY_MODE_LABELS = {"unique": "Unik", "list": "Liste"}
+
+if "last_source_headers" not in st.session_state:
+    st.session_state["last_source_headers"] = []
 
 
 st.title("Luminoner – batchannotering")
@@ -69,7 +81,7 @@ action_cols = st.columns([0.25, 0.75])
 with action_cols[0]:
     if st.button("➕ Legg til felt", use_container_width=True):
         next_id = st.session_state.get("category_field_counter", len(entries))
-        entries.append({"id": next_id, "label": "", "values": ""})
+        entries.append({"id": next_id, "label": "", "values": "", "mode": "unique"})
         st.session_state["category_field_counter"] = next_id + 1
 with action_cols[1]:
     st.caption("Bruk «Fjern» for å ta bort et felt (minst ett felt må eksistere).")
@@ -77,7 +89,7 @@ with action_cols[1]:
 category_fields: List[Dict[str, Any]] = []
 used_keys = set()
 for idx, entry in enumerate(entries):
-    col_label, col_values, col_remove = st.columns([1, 2, 0.25])
+    col_label, col_values, col_mode, col_remove = st.columns([1, 2, 0.8, 0.25])
     label_val = col_label.text_input(
         "Feltnavn",
         value=entry.get("label", ""),
@@ -92,6 +104,17 @@ for idx, entry in enumerate(entries):
         height=80,
         key=f"category_field_values_{entry['id']}",
     )
+    mode_default = entry.get("mode", "unique")
+    mode_val = col_mode.radio(
+        "Variant",
+        options=["unique", "list"],
+        index=0 if mode_default != "list" else 1,
+        format_func=lambda opt: CATEGORY_MODE_LABELS.get(opt, opt),
+        key=f"category_field_mode_{entry['id']}",
+        horizontal=True,
+        help="Unik = én verdi. Liste = 0–3 verdier fra samme vokabular.",
+    )
+    entry["mode"] = mode_val
     if col_remove.button(
         "Fjern",
         key=f"remove_category_field_{entry['id']}",
@@ -122,6 +145,7 @@ for idx, entry in enumerate(entries):
             "label": display_label,
             "key": field_key,
             "values": field_values,
+            "mode": mode_val,
         }
     )
 
@@ -130,13 +154,28 @@ def _values_display(values: List[str]) -> str:
     return ", ".join(f'"{v}"' for v in values) if values else '"verdi1", "verdi2"'
 
 
+def _list_example(values: List[str]) -> str:
+    if not values:
+        return '["verdi1", "verdi2"]'
+    sample = values[: min(2, len(values))]
+    inner = ", ".join(f'"{v}"' for v in sample)
+    return f"[{inner}]"
+
+
 field_names_display = ", ".join(f'"{c["label"]}"' for c in category_fields)
 if not field_names_display:
     field_names_display = '"kategori"'
-field_rules_lines = [
-    f'- Feltet "{c["key"]}" skal være én av: {_values_display(c["values"])}.'
-    for c in category_fields
-]
+field_rules_lines: List[str] = []
+for c in category_fields:
+    if c["mode"] == "list":
+        field_rules_lines.append(
+            f'- Feltet "{c["key"]}" kan inneholde opptil 3 verdier valgt fra: '
+            f'{_values_display(c["values"])} (returner som liste).'
+        )
+    else:
+        field_rules_lines.append(
+            f'- Feltet "{c["key"]}" skal være én av: {_values_display(c["values"])}.'
+        )
 if not field_rules_lines:
     field_rules_lines = [
         '- Feltet "kategori" skal være én av: "kategori1", "kategori2".'
@@ -145,10 +184,18 @@ field_rules_lines.append(
     f'- Hvis ingen kode passer i et felt, bruk verdien "{CATCH_ALL_VALUE}".'
 )
 field_rules_text = "\n".join(field_rules_lines)
-json_field_lines = "\n".join(
-    f'    "{c["key"]}": <én av {_values_display(c["values"])}>,'
-    for c in category_fields
-)
+json_field_line_parts: List[str] = []
+for c in category_fields:
+    if c["mode"] == "list":
+        json_field_line_parts.append(
+            f'    "{c["key"]}": {_list_example(c["values"])},  '
+            "// liste med 0–3 verdier fra settet over"
+        )
+    else:
+        json_field_line_parts.append(
+            f'    "{c["key"]}": <én av {_values_display(c["values"])}>,'
+        )
+json_field_lines = "\n".join(json_field_line_parts)
 if not json_field_lines:
     json_field_lines = '    "kategori": <én av "kategori1", "kategori2">,'  # fallback
 
@@ -216,8 +263,39 @@ def pick_sample(
     return [entries[i] for i in chosen]
 
 
+def normalize_list_values(value: Any, max_items: int = 3) -> List[str]:
+    """
+    Sørger for at listefelt alltid blir en liste med rene strenger (maks max_items).
+    """
+    if isinstance(value, list):
+        items = value
+    elif value is None:
+        items = []
+    else:
+        items = [value]
+    cleaned: List[str] = []
+    for item in items:
+        text = str(item).strip()
+        if text:
+            cleaned.append(text)
+        if len(cleaned) >= max_items:
+            break
+    return cleaned
+
+
+def normalize_single_value(value: Any) -> str:
+    if isinstance(value, list):
+        if not value:
+            return ""
+        value = value[0]
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 input_entries: List[Dict[str, Any]] = []
 selected_fragment_column: str | None = None
+current_source_headers: List[str] = []
 
 if src == "Lim inn":
     txt = st.text_area(
@@ -227,11 +305,13 @@ if src == "Lim inn":
     )
     if txt:
         normalized = normalize_lines(txt.splitlines(), MAX_WORDS)
+        if normalized:
+            current_source_headers = ["fragment"]
         for idx, frag in enumerate(normalized):
             input_entries.append(
                 {
                     "fragment": frag,
-                    "source_row": None,
+                    "source_row": {"fragment": frag},
                     "source_row_index": idx + 1,
                 }
             )
@@ -252,11 +332,13 @@ else:
                 file_bytes.decode("utf-8", errors="ignore").splitlines(),
                 MAX_WORDS,
             )
+            if normalized:
+                current_source_headers = ["fragment"]
             for idx, frag in enumerate(normalized):
                 input_entries.append(
                     {
                         "fragment": frag,
-                        "source_row": None,
+                        "source_row": {"fragment": frag},
                         "source_row_index": idx + 1,
                     }
                 )
@@ -270,6 +352,7 @@ else:
             if not headers:
                 st.error("Fant ingen kolonner i filen. Sjekk at CSV/TSV har header-rad.")
             else:
+                current_source_headers = headers
                 default_idx = 0
                 for i, header in enumerate(headers):
                     if (header or "").strip().lower() == "concordance":
@@ -301,6 +384,8 @@ else:
                     st.warning(
                         f"{empty_count} rad(er) mangler tekst i kolonnen «{selected_fragment_column}»."
                     )
+
+st.session_state["last_source_headers"] = current_source_headers
 
 if selected_fragment_column:
     st.caption(
@@ -500,17 +585,12 @@ if to_run_entries:
         record_id: int, fragment_value: str, record: Dict[str, Any] | None = None
     ) -> Dict[str, Any]:
         rec = record or record_lookup.get(record_id, {"id": record_id})
-        base = dict((rec.get("source_row") or {}))
+        source_row = rec.get("source_row") or {}
+        base = dict(source_row)
         idx = rec.get("source_row_index")
         if idx is not None:
-            base["input_row_index"] = idx
-        rid = rec.get("id", record_id)
-        base["luminoner_id"] = rid
-        if "id" not in base:
-            base["id"] = rid
-        base["fragment_input"] = fragment_value
-        if "fragment" not in base:
-            base["fragment"] = fragment_value
+            base[META_ROW_INDEX_KEY] = idx
+        base[META_RECORD_ID_KEY] = rec.get("id", record_id)
         base["model"] = MODEL
         base["temperature"] = TEMP
         return base
@@ -545,10 +625,19 @@ if to_run_entries:
                 if rid is None:
                     continue
                 row = compose_row(rid, frag_map.get(rid, ""))
-                row["karakteristikker"] = it.get("karakteristikker", [])
-                row["begrunnelse"] = it.get("begrunnelse", "")
+                row["karakteristikker"] = normalize_list_values(
+                    it.get("karakteristikker", [])
+                )
+                row["begrunnelse"] = normalize_single_value(it.get("begrunnelse", ""))
                 for field in category_fields:
-                    row[field["key"]] = it.get(field["key"], "")
+                    if field["mode"] == "list":
+                        row[field["key"]] = normalize_list_values(
+                            it.get(field["key"], [])
+                        )
+                    else:
+                        row[field["key"]] = normalize_single_value(
+                            it.get(field["key"], "")
+                        )
                 all_rows.append(row)
 
             got_ids = {it.get("id") for it in items}
@@ -558,7 +647,10 @@ if to_run_entries:
                     row["karakteristikker"] = []
                     row["begrunnelse"] = "manglende rad i svar"
                     for field in category_fields:
-                        row[field["key"]] = "feil"
+                        if field["mode"] == "list":
+                            row[field["key"]] = ["feil"]
+                        else:
+                            row[field["key"]] = "feil"
                     all_rows.append(row)
 
         except Exception as e:
@@ -567,7 +659,10 @@ if to_run_entries:
                 row["karakteristikker"] = []
                 row["begrunnelse"] = str(e)
                 for field in category_fields:
-                    row[field["key"]] = "feil"
+                    if field["mode"] == "list":
+                        row[field["key"]] = ["feil"]
+                    else:
+                        row[field["key"]] = "feil"
                 all_rows.append(row)
 
         done += len(batch)
@@ -576,12 +671,15 @@ if to_run_entries:
 
     if all_rows:
         def _row_sort_key(row: Dict[str, Any]):
-            idx = row.get("input_row_index")
+            idx = row.get(META_ROW_INDEX_KEY)
             if idx is None:
-                idx = row.get("luminoner_id", 0)
-            return (idx, row.get("luminoner_id", 0))
+                idx = row.get(META_RECORD_ID_KEY, 0)
+            return (idx, row.get(META_RECORD_ID_KEY, 0))
 
         all_rows.sort(key=_row_sort_key)
+        for row in all_rows:
+            row.pop(META_ROW_INDEX_KEY, None)
+            row.pop(META_RECORD_ID_KEY, None)
 
     if not all_rows:
         st.warning("Ingen rader å vise.")
@@ -593,7 +691,24 @@ if to_run_entries:
             st.warning("Ingen kategorifelter definert – oppdater oppsettet over.")
         else:
             for cat in category_fields:
-                counts = Counter([r.get(cat["key"], "") for r in all_rows])
+                values_for_counts: List[str] = []
+                empty_label = "(tom)"
+                if cat["mode"] == "list":
+                    empty_label = "(tom liste)"
+                    for r in all_rows:
+                        cell = r.get(cat["key"])
+                        if isinstance(cell, list) and cell:
+                            for val in cell:
+                                text = str(val).strip()
+                                values_for_counts.append(text or empty_label)
+                        else:
+                            values_for_counts.append(empty_label)
+                else:
+                    for r in all_rows:
+                        text = normalize_single_value(r.get(cat["key"], ""))
+                        values_for_counts.append(text or empty_label)
+
+                counts = Counter(values_for_counts)
                 st.markdown(f"**Fordeling for {cat['label']}**")
                 st.table({"verdi": list(counts.keys()), "antall": list(counts.values())})
                 if counts:
@@ -612,13 +727,41 @@ if to_run_entries:
 
         # CSV
         csv_buf = io.StringIO()
-        fieldnames = sorted({k for o in all_rows for k in o.keys()})
+        ordered_keys: List[str] = []
+        for o in all_rows:
+            for k in o.keys():
+                if k not in ordered_keys:
+                    ordered_keys.append(k)
+        analysis_order = [c["key"] for c in category_fields] + [
+            "karakteristikker",
+            "begrunnelse",
+        ]
+        source_headers = st.session_state.get("last_source_headers", []) or []
+        source_keys = [k for k in source_headers if k in ordered_keys]
+        fieldnames: List[str] = []
+
+        def _extend(keys: List[str]):
+            for key in keys:
+                if not key:
+                    continue
+                if key not in fieldnames:
+                    fieldnames.append(key)
+
+        _extend(analysis_order)
+        _extend(source_keys)
+        remaining = [k for k in ordered_keys if k not in fieldnames]
+        _extend(remaining)
         writer = csv.DictWriter(csv_buf, fieldnames=fieldnames)
         writer.writeheader()
         for o in all_rows:
-            o2 = {**o}
+            o2 = {k: o.get(k, "") for k in fieldnames}
             if isinstance(o2.get("karakteristikker"), list):
                 o2["karakteristikker"] = "|".join(o2["karakteristikker"])
+            for field in category_fields:
+                if field["mode"] == "list":
+                    values = o2.get(field["key"])
+                    if isinstance(values, list):
+                        o2[field["key"]] = "|".join(values)
             writer.writerow({k: o2.get(k, "") for k in fieldnames})
         csv_bytes = csv_buf.getvalue().encode("utf-8")
 
