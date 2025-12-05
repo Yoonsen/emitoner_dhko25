@@ -303,6 +303,9 @@ def normalize_single_value(value: Any) -> str:
 input_entries: List[Dict[str, Any]] = []
 selected_fragment_column: str | None = None
 current_source_headers: List[str] = []
+pending_table_rows: List[Dict[str, Any]] = []
+pending_table_headers: List[str] = []
+pending_table_default_idx = 0
 
 if src == "Lim inn":
     txt = st.text_area(
@@ -360,39 +363,77 @@ else:
                 st.error("Fant ingen kolonner i filen. Sjekk at CSV/TSV har header-rad.")
             else:
                 current_source_headers = headers
+                pending_table_headers = headers
+                pending_table_rows = rows
                 default_idx = 0
                 for i, header in enumerate(headers):
                     if (header or "").strip().lower() == "concordance":
                         default_idx = i
                         break
-
-                selected_fragment_column = st.selectbox(
-                    "Kolonne med fragmenter",
-                    options=headers,
-                    index=default_idx,
-                    key="fragment_column_select",
-                    help='Standard er "concordance" hvis den finnes.',
-                )
-
-                for idx, row in enumerate(rows):
-                    row_copy = {h: row.get(h, "") for h in headers}
-                    frag_value = row_copy.get(selected_fragment_column, "")
-                    cleaned = clamp_fragment(frag_value, MAX_WORDS)
-                    input_entries.append(
-                        {
-                            "fragment": cleaned,
-                            "source_row": row_copy,
-                            "source_row_index": idx + 1,
-                        }
-                    )
-
-                empty_count = sum(1 for entry in input_entries if not entry["fragment"])
-                if empty_count:
-                    st.warning(
-                        f"{empty_count} rad(er) mangler tekst i kolonnen «{selected_fragment_column}»."
-                    )
+                pending_table_default_idx = default_idx
 
 st.session_state["last_source_headers"] = current_source_headers
+
+st.subheader("1b) Fragmentkolonne og target-markering")
+fragment_marker_cols = st.columns([2.5, 1, 1])
+with fragment_marker_cols[0]:
+    if pending_table_headers:
+        selected_fragment_column = st.selectbox(
+            "Kolonne med fragmenter",
+            options=pending_table_headers,
+            index=min(pending_table_default_idx, len(pending_table_headers) - 1),
+            key="fragment_column_select",
+            help='Standard er "concordance" hvis den finnes.',
+        )
+    else:
+        st.text_input(
+            "Kolonne med fragmenter",
+            value="(gjelder CSV/TSV-filer)",
+            disabled=True,
+        )
+with fragment_marker_cols[1]:
+    target_marker_left_raw = st.text_input(
+        "Startmarkør",
+        key="target_marker_left_input",
+        help="Tegnene rett før målfragmentet (f.eks. <b>).",
+        max_chars=20,
+    )
+with fragment_marker_cols[2]:
+    target_marker_right_raw = st.text_input(
+        "Sluttmarkør",
+        key="target_marker_right_input",
+        help="Tegnene rett etter målfragmentet (f.eks. </b>).",
+        max_chars=20,
+    )
+target_marker_left = (target_marker_left_raw or DEFAULT_TARGET_MARKER_LEFT).strip()
+target_marker_right = (target_marker_right_raw or DEFAULT_TARGET_MARKER_RIGHT).strip()
+st.caption(
+    "Marker mål-fragmentet med start/sluttmarkør. Standard matcher DH-lab-formatet med <b>mål</b>."
+)
+st.caption(
+    f"Eksempel på forventet struktur (A = venstre kontekst, B = høyre kontekst): "
+    f"A{target_marker_left}klima{target_marker_right}B"
+)
+
+if pending_table_rows and selected_fragment_column:
+    input_entries.clear()
+    for idx, row in enumerate(pending_table_rows):
+        row_copy = {h: row.get(h, "") for h in pending_table_headers}
+        frag_value = row_copy.get(selected_fragment_column, "")
+        cleaned = clamp_fragment(frag_value, MAX_WORDS)
+        input_entries.append(
+            {
+                "fragment": cleaned,
+                "source_row": row_copy,
+                "source_row_index": idx + 1,
+            }
+        )
+
+    empty_count = sum(1 for entry in input_entries if not entry["fragment"])
+    if empty_count:
+        st.warning(
+            f"{empty_count} rad(er) mangler tekst i kolonnen «{selected_fragment_column}»."
+        )
 
 if selected_fragment_column:
     st.caption(
@@ -403,30 +444,6 @@ else:
     st.caption(
         f"Fant {len(input_entries)} fragmenter (dupl/blanke kuttet). Maks {MAX_WORDS} ord per linje."
     )
-
-st.subheader("1b) Target-markering (målord)")
-st.caption(
-    "Marker målordet/uttrykket du vil klassifisere med en start- og sluttmarkør. "
-    "Standard matcher DH-lab-formatet med <b>mål</b>."
-)
-marker_cols = st.columns(2)
-target_marker_left_raw = marker_cols[0].text_input(
-    "Startmarkør",
-    key="target_marker_left_input",
-    help="Tegnene rett før målfragmentet (f.eks. <b>).",
-    max_chars=20,
-)
-target_marker_right_raw = marker_cols[1].text_input(
-    "Sluttmarkør",
-    key="target_marker_right_input",
-    help="Tegnene rett etter målfragmentet (f.eks. </b>).",
-    max_chars=20,
-)
-target_marker_left = (target_marker_left_raw or DEFAULT_TARGET_MARKER_LEFT).strip()
-target_marker_right = (target_marker_right_raw or DEFAULT_TARGET_MARKER_RIGHT).strip()
-target_marker_example = f"A{target_marker_left}klima{target_marker_right}B"
-st.caption("Eksempel på forventet struktur (A = venstre kontekst, B = høyre kontekst):")
-st.code(target_marker_example)
 
 # ---------- Instruks (system) ----------
 st.subheader("2) Instruks (oppgavebeskrivelse)")
