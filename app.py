@@ -36,6 +36,37 @@ DEFAULT_TARGET_MARKER_RIGHT = "</b>"
 if "last_source_headers" not in st.session_state:
     st.session_state["last_source_headers"] = []
 
+APP_PASSWORD = (
+    secret_or_env("APP_PASSWORD", None)
+    or secret_or_env("PASSWORD", "")
+    or ""
+).strip()
+
+
+def gate():
+    """
+    Enkel passordbeskyttelse for offentlige deploys. Hopper over hvis APP_PASSWORD mangler.
+    """
+    if not APP_PASSWORD:
+        return
+    if st.session_state.get("authed"):
+        return
+
+    st.title("Luminoner – adgangskontroll")
+    st.info("Appen krever passord før annoteringene kan brukes.")
+    pw = st.text_input("Passord", type="password")
+    if st.button("Logg inn"):
+        if pw == APP_PASSWORD:
+            st.session_state["authed"] = True
+            st.success("Innlogget – laster appen …")
+            st.rerun()
+        else:
+            st.error("Feil passord.")
+    st.stop()
+
+
+gate()
+
 
 st.title("Luminoner – batchannotering")
 

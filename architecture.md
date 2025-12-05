@@ -6,6 +6,7 @@ Dette dokumentet er kilden som beskriver hvordan Streamlit-versjonen fungerer. N
 
 ### 1. Hovedkomponenter
 - **UI/State**: Streamlit holder `session_state` for kategorioppsett, target-markører, sampling og sist brukte kolonneheadere.
+- **Adgangskontroll**: valgfri passordport (`APP_PASSWORD`). Hvis satt må brukeren autentiseres før resten av appen rendres.
 - **OpenAI-klient**: Ett `OpenAI(api_key=...)`-objekt brukes for alle batchkall i en kjøring.
 - **Resultathåndtering**: Alle modellresponser normaliseres, merges med kildekolonner og eksporteres som JSONL + CSV.
 

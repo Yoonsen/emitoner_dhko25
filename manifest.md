@@ -11,6 +11,7 @@
 
 ### Miljøvariabler/secrets
 - `OPENAI_API_KEY` (kreves, enten i `.streamlit/secrets.toml` eller env).
+- `APP_PASSWORD` (valgfri; hvis satt må brukeren logge inn før appen lastes).
 - Valgfritt: alle øvrige secrets er fjernet; appen krever ikke passord/gate.
 
 ### Kjøring lokalt
