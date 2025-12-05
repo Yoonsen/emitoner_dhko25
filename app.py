@@ -30,6 +30,8 @@ INITIAL_CATEGORY_FIELDS = [
 META_ROW_INDEX_KEY = "__luminoner_input_index"
 META_RECORD_ID_KEY = "__luminoner_internal_id"
 CATEGORY_MODE_LABELS = {"unique": "Unik", "list": "Liste"}
+DEFAULT_TARGET_MARKER_LEFT = "<b>"
+DEFAULT_TARGET_MARKER_RIGHT = "</b>"
 
 if "last_source_headers" not in st.session_state:
     st.session_state["last_source_headers"] = []
@@ -76,6 +78,11 @@ if "category_field_entries" not in st.session_state:
     st.session_state["category_field_counter"] = len(INITIAL_CATEGORY_FIELDS)
 
 entries = st.session_state["category_field_entries"]
+
+if "target_marker_left_input" not in st.session_state:
+    st.session_state["target_marker_left_input"] = DEFAULT_TARGET_MARKER_LEFT
+if "target_marker_right_input" not in st.session_state:
+    st.session_state["target_marker_right_input"] = DEFAULT_TARGET_MARKER_RIGHT
 
 action_cols = st.columns([0.25, 0.75])
 with action_cols[0]:
@@ -397,11 +404,39 @@ else:
         f"Fant {len(input_entries)} fragmenter (dupl/blanke kuttet). Maks {MAX_WORDS} ord per linje."
     )
 
+st.subheader("1b) Target-markering (målord)")
+st.caption(
+    "Marker målordet/uttrykket du vil klassifisere med en start- og sluttmarkør. "
+    "Standard matcher DH-lab-formatet med <b>mål</b>."
+)
+marker_cols = st.columns(2)
+target_marker_left_raw = marker_cols[0].text_input(
+    "Startmarkør",
+    key="target_marker_left_input",
+    help="Tegnene rett før målfragmentet (f.eks. <b>).",
+    max_chars=20,
+)
+target_marker_right_raw = marker_cols[1].text_input(
+    "Sluttmarkør",
+    key="target_marker_right_input",
+    help="Tegnene rett etter målfragmentet (f.eks. </b>).",
+    max_chars=20,
+)
+target_marker_left = (target_marker_left_raw or DEFAULT_TARGET_MARKER_LEFT).strip()
+target_marker_right = (target_marker_right_raw or DEFAULT_TARGET_MARKER_RIGHT).strip()
+target_marker_example = f"A{target_marker_left}klima{target_marker_right}B"
+st.caption("Eksempel på forventet struktur (A = venstre kontekst, B = høyre kontekst):")
+st.code(target_marker_example)
+
 # ---------- Instruks (system) ----------
 st.subheader("2) Instruks (oppgavebeskrivelse)")
 
 default_user_prompt = f"""
 Du annoterer hvert tekstfragment uavhengig.
+
+Fragmentene har formen A{target_marker_left}X{target_marker_right}B der X (mellom
+markørene) er målordet du skal beskrive. Bruk konteksten før/etter som støtte,
+men alle kategorier skal gjelde selve X.
 
 Bruk kategorifeltene {field_names_display} til å fordele én kode per felt (f.eks.
 sport/økonomi/konflikt).
@@ -428,6 +463,9 @@ Formatkrav (viktig):
 
 - Du får linjer på formen "<id> | <fragment>".
 - Du skal behandle hvert fragment uavhengig.
+- Fragmentene følger mønsteret A{target_marker_left}X{target_marker_right}B – X
+  (mellom markørene) er målfragmentet du klassifiserer.
+- Bruk konteksten utenfor markørene som støtte, men feltverdiene skal beskrive X.
 {field_rules_text}
 - Du skal alltid svare med KUN ÉN gyldig JSON-struktur med nøkkelen "items".
 - "items" skal være en liste med objekter på denne formen:
