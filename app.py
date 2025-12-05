@@ -32,6 +32,40 @@ META_RECORD_ID_KEY = "__luminoner_internal_id"
 CATEGORY_MODE_LABELS = {"unique": "Unik", "list": "Liste"}
 DEFAULT_TARGET_MARKER_LEFT = "<b>"
 DEFAULT_TARGET_MARKER_RIGHT = "</b>"
+GEO_FIELD_OPTIONS = [
+    {
+        "key": "geo_historisk_navn",
+        "label": "Historisk navn",
+        "description": "Navn slik det står i kilden (eldre stavemåter beholdes).",
+        "rule": "skal være navnet slik det står i kilden. Bruk «ukjent» hvis fragmentet ikke sier noe eksplisitt.",
+        "json_hint": '"Christiania"',
+        "default": True,
+    },
+    {
+        "key": "geo_moderne_navn",
+        "label": "Moderne navn",
+        "description": "Dagens offisielle navn på stedet.",
+        "rule": "skal være dagens offisielle navn (om mulig).",
+        "json_hint": '"Oslo"',
+        "default": True,
+    },
+    {
+        "key": "geo_land_region",
+        "label": "Land / region",
+        "description": "Land eller region (f.eks. Norge, Tamil Nadu).",
+        "rule": "skal være land eller regionen stedet tilhører.",
+        "json_hint": '"Norge"',
+        "default": True,
+    },
+    {
+        "key": "geo_koordinater",
+        "label": "Koordinater",
+        "description": "Desimalgrader «lat,long» (f.eks. 59.9139,10.7522).",
+        "rule": "skal være lat,long i desimalgrader (bruk punktum og komma mellom verdiene).",
+        "json_hint": '"59.9139,10.7522"',
+        "default": False,
+    },
+]
 
 if "last_source_headers" not in st.session_state:
     st.session_state["last_source_headers"] = []
@@ -114,6 +148,10 @@ if "target_marker_left_input" not in st.session_state:
     st.session_state["target_marker_left_input"] = DEFAULT_TARGET_MARKER_LEFT
 if "target_marker_right_input" not in st.session_state:
     st.session_state["target_marker_right_input"] = DEFAULT_TARGET_MARKER_RIGHT
+for option in GEO_FIELD_OPTIONS:
+    state_key = f"geo_option_{option['key']}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = option.get("default", False)
 
 action_cols = st.columns([0.25, 0.75])
 with action_cols[0]:
@@ -188,6 +226,37 @@ for idx, entry in enumerate(entries):
     )
 
 
+st.subheader("Geotagging (valgfritt)")
+st.caption(
+    "Bruk dette når fragmentet refererer til et sted du vil disambiguere. "
+    "Markér hvilke geofelter modellen skal returnere per rad."
+)
+geo_enabled = st.checkbox(
+    "Be modellen returnere geodata",
+    key="geo_enabled_toggle",
+    help="Når aktivert forsøker modellen å finne historisk/moderne navn, land og evt. koordinater.",
+)
+geo_fields_active: List[Dict[str, Any]] = []
+if geo_enabled:
+    st.caption(
+        "Velg én eller flere geofelter (historiske navn, moderne navn, land, koordinater)."
+    )
+    geo_cols = st.columns(2)
+    for idx, option in enumerate(GEO_FIELD_OPTIONS):
+        col = geo_cols[idx % len(geo_cols)]
+        checked = col.checkbox(
+            option["label"],
+            key=f"geo_option_{option['key']}",
+            help=option["description"],
+        )
+        if checked:
+            geo_fields_active.append(option)
+    if not geo_fields_active:
+        st.warning("Velg minst ett geofelt eller skru av geotagging.")
+else:
+    st.caption("Geotagging er av – aktiver for å få felter som historisk/moderne navn.")
+
+
 def _values_display(values: List[str]) -> str:
     return ", ".join(f'"{v}"' for v in values) if values else '"verdi1", "verdi2"'
 
@@ -218,6 +287,14 @@ if not field_rules_lines:
     field_rules_lines = [
         '- Feltet "kategori" skal være én av: "kategori1", "kategori2".'
     ]
+if geo_fields_active:
+    field_rules_lines.append(
+        "- Geofeltene beskriver stedet målordet peker på. Skriv «ukjent» når informasjon mangler."
+    )
+    for geo in geo_fields_active:
+        field_rules_lines.append(
+            f'- Feltet "{geo["key"]}" {geo["rule"]}'
+        )
 field_rules_lines.append(
     f'- Hvis ingen kode passer i et felt, bruk verdien "{CATCH_ALL_VALUE}".'
 )
@@ -233,6 +310,10 @@ for c in category_fields:
         json_field_line_parts.append(
             f'    "{c["key"]}": <én av {_values_display(c["values"])}>,'
         )
+for geo in geo_fields_active:
+    json_field_line_parts.append(
+        f'    "{geo["key"]}": {geo["json_hint"]},'
+    )
 json_field_lines = "\n".join(json_field_line_parts)
 if not json_field_lines:
     json_field_lines = '    "kategori": <én av "kategori1", "kategori2">,'  # fallback
@@ -479,6 +560,14 @@ else:
 # ---------- Instruks (system) ----------
 st.subheader("2) Instruks (oppgavebeskrivelse)")
 
+geo_prompt_text = ""
+if geo_fields_active:
+    geo_labels_display = ", ".join(f'"{geo["label"]}"' for geo in geo_fields_active)
+    geo_prompt_text = (
+        f"\nRapporter også geodata for målfragmentet ved å fylle feltene {geo_labels_display}. "
+        "Hvis et felt ikke kan bestemmes, skriv «ukjent». Koordinater oppgis som lat,long."
+    )
+
 default_user_prompt = f"""
 Du annoterer hvert tekstfragment uavhengig.
 
@@ -493,6 +582,8 @@ Hvis ingen kode passer i et felt, bruk verdien "{CATCH_ALL_VALUE}".
 
 Bruk feltet "karakteristikker" til 0–3 korte stikkord som sier noe om fenomenet
 du undersøker (f.eks. «personlig», «offentlig», «historisk», «ironisk», osv.).
+
+{geo_prompt_text}
 
 Du kan bruke denne appen til f.eks.:
 - forskjell på fysisk klima vs. debattklima
@@ -724,6 +815,8 @@ if to_run_entries:
                         row[field["key"]] = normalize_single_value(
                             it.get(field["key"], "")
                         )
+                for geo in geo_fields_active:
+                    row[geo["key"]] = normalize_single_value(it.get(geo["key"], ""))
                 all_rows.append(row)
 
             got_ids = {it.get("id") for it in items}
@@ -737,6 +830,8 @@ if to_run_entries:
                             row[field["key"]] = ["feil"]
                         else:
                             row[field["key"]] = "feil"
+                    for geo in geo_fields_active:
+                        row[geo["key"]] = "feil"
                     all_rows.append(row)
 
         except Exception as e:
@@ -749,6 +844,8 @@ if to_run_entries:
                         row[field["key"]] = ["feil"]
                     else:
                         row[field["key"]] = "feil"
+                for geo in geo_fields_active:
+                    row[geo["key"]] = "feil"
                 all_rows.append(row)
 
         done += len(batch)
@@ -818,10 +915,15 @@ if to_run_entries:
             for k in o.keys():
                 if k not in ordered_keys:
                     ordered_keys.append(k)
-        analysis_order = [c["key"] for c in category_fields] + [
-            "karakteristikker",
-            "begrunnelse",
-        ]
+        geo_field_keys = [g["key"] for g in geo_fields_active]
+        analysis_order = (
+            [c["key"] for c in category_fields]
+            + geo_field_keys
+            + [
+                "karakteristikker",
+                "begrunnelse",
+            ]
+        )
         source_headers = st.session_state.get("last_source_headers", []) or []
         source_keys = [k for k in source_headers if k in ordered_keys]
         fieldnames: List[str] = []

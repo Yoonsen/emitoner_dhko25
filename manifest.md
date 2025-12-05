@@ -26,6 +26,7 @@
 - Dynamisk liste over kategorifelter: legg til/fjern felt, hver med navn + kommaseparerte verdier og modus (`Unik` vs `Liste`, sistnevnte støtter opptil tre verdier).
 - Alle verdilister får automatisk `uten-relevans`; prompten minner modellen om å bruke den når ingenting passer.
 - Tilpassbar target-markering (default `<b>…</b>`); instruksen forklarer at fragmentene alltid har strukturen `A<start>X<slutt>B`.
+- Geotagging-modus: aktiver geodata og velg felt som historisk navn, moderne navn, land og koordinater – feltene kobles inn i prompten og eksporteres som egne kolonner.
 - Instruksjonsfeltet + teknisk prompt oppdateres live basert på feltene og markørene.
 - Kjøring kan gjøres på sample (med token-estimat) eller hele datasettet, med progressbar og robust JSON-parsing.
 - Resultater lastes ned som JSONL/CSV, der analysekolonnene alltid kommer før originale kildekolonner.

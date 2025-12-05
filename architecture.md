@@ -23,24 +23,30 @@ Dette dokumentet er kilden som beskriver hvordan Streamlit-versjonen fungerer. N
    - Brukeren angir start/slutt-markør (default `<b>` og `</b>` for DH-lab-data).
    - Instruksjonen forutsetter at fragmentet er på formen `A<start>X<slutt>B` hvor `X` er målordet.
 
-3. **Inputkilder**
+3. **Geotagging (valgfritt)**
+   - En egen seksjon lar brukeren aktivere geodata og velge hvilke felter modellen skal fylle (historisk navn, moderne navn, land/region, koordinater).
+   - Valgene påvirker både brukerprompten og de tekniske formatkravene – hvert felt beskrives eksplisitt og forventes å bli returnert som tekst (koordinater i `lat,long`).
+   - Resultatene eksporteres som egne kolonner (`geo_historisk_navn`, `geo_moderne_navn`, `geo_land_region`, `geo_koordinater`), slik at downstream-pipelines kan fortsette med GIS/disambiguering.
+
+4. **Inputkilder**
    - **Lim inn**: én forekomst per linje. Teksten lagres også som `source_row["fragment"]`.
    - **Filopplasting**:
      - Plain `.txt`: tolkes som én forekomst per linje.
      - `.csv/.tsv`: `csv.Sniffer` + heuristikk for skilletegn. Brukeren velger fragmentkolonne (default `concordance` om den finnes).
      - Originalkolonner kopieres uendret til hver `source_row`.
 
-4. **Sampling**
+5. **Sampling**
    - Brukeren kan kjøre *Kjør sample* (randomisert subset) eller *Kjør alt*.
    - Token-estimat vises for både full kjøring og valgt sample.
 
 ---
 
 ### 3. Promptkonstruksjon
-- **Brukerprompt** (`user_prompt`): redigerbart felt som automatisk innholder beskrivelsen av target-markører og kategorioppsett.
+- **Brukerprompt** (`user_prompt`): redigerbart felt som automatisk innholder beskrivelsen av target-markører, kategorioppsett og – dersom aktivert – geotagging (inkl. hvilke felter som skal fylles og hvordan ukjent håndteres).
 - **Teknisk prompt** (`TECH_PROMPT`):
-  - Angir formatkrav, JSON-struktur og feltregler.
+  - Angir formatkrav, JSON-struktur, feltregler og geofelt-instruksjoner.
   - For listefelt beskrives tydelig at de skal returneres som lister med maks 3 verdier.
+  - Geofeltene beskrives som egne tekstfelt (koordinater i `lat,long`), slik at backend kan forvente flate nøkler.
   - Begge promptene kombineres til `prompt = user_prompt + "\n\n" + TECH_PROMPT`.
 
 ---
@@ -69,7 +75,7 @@ Dette dokumentet er kilden som beskriver hvordan Streamlit-versjonen fungerer. N
 3. **Eksport**
    - **JSONL**: én rad per annotert fragment, ekte lister for listefelt og `karakteristikker`.
    - **CSV**:
-     - Kolonnerekkefølge: alle kategori-felt (i UI-rekkefølge) → `karakteristikker` → `begrunnelse` → originale kildekolonner (i samme rekkefølge som input) → eventuelle øvrige felt (modell, temperatur, etc.).
+     - Kolonnerekkefølge: kategori-felt (i UI-rekkefølge) → eventuelle geofelt (i valgt rekkefølge) → `karakteristikker` → `begrunnelse` → originale kildekolonner → eventuelle øvrige felt (modell, temperatur, etc.).
      - Listestrukturer serialiseres med `|`.
 
 ---
