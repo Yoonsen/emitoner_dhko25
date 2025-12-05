@@ -178,6 +178,26 @@ def normalize_lines(lines: List[str], max_words: int) -> List[str]:
     return list(dict.fromkeys(out))
 
 
+def detect_delimiter(raw_text: str, fallback: str = ",") -> str:
+    """
+    Best-effort deteksjon av tabellskilletegn (komma, semikolon, tab, pipe).
+    Bruker csv.Sniffer når mulig og faller ellers tilbake til enkel telling.
+    """
+    sample = raw_text[:5000]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=[",", ";", "\t", "|"])
+        if dialect.delimiter:
+            return dialect.delimiter
+    except csv.Error:
+        pass
+
+    counts = {d: raw_text.count(d) for d in [",", ";", "\t", "|"]}
+    best = max(counts, key=lambda d: counts[d])
+    if counts.get(best, 0) > 0:
+        return best
+    return fallback
+
+
 input_entries: List[Dict[str, Any]] = []
 selected_fragment_column: str | None = None
 
@@ -223,8 +243,8 @@ else:
                     }
                 )
         else:
-            delimiter = "\t" if is_tsv else ","
             csv_text = file_bytes.decode("utf-8", errors="ignore")
+            delimiter = "\t" if is_tsv else detect_delimiter(csv_text, ",")
             reader = csv.DictReader(io.StringIO(csv_text), delimiter=delimiter)
             rows = list(reader)
             headers = reader.fieldnames or []
