@@ -157,49 +157,122 @@ st.subheader("1) Data inn")
 src = st.radio("Kilde", ["Lim inn", "Last opp CSV/TSV"], horizontal=True)
 
 
+def clamp_fragment(text: str, max_words: int) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    words = text.split()
+    if len(words) > max_words:
+        return " ".join(words[:max_words])
+    return text
+
+
 def normalize_lines(lines: List[str], max_words: int) -> List[str]:
     out = []
     for ln in lines:
-        ln = (ln or "").strip()
-        if not ln:
+        cleaned = clamp_fragment(ln, max_words)
+        if not cleaned:
             continue
-        words = ln.split()
-        if len(words) > max_words:
-            ln = " ".join(words[:max_words])
-        out.append(ln)
+        out.append(cleaned)
     # fjern duplikater, behold rekkefølge
     return list(dict.fromkeys(out))
 
 
-lines: List[str] = []
+input_entries: List[Dict[str, Any]] = []
+selected_fragment_column: str | None = None
+
 if src == "Lim inn":
     txt = st.text_area(
         "Én forekomst per linje (rå konkordanser)",
         height=220,
-        placeholder="fragment 1\nfragment 2\n."
+        placeholder="fragment 1\nfragment 2\n.",
     )
     if txt:
-        lines = normalize_lines(txt.splitlines(), MAX_WORDS)
+        normalized = normalize_lines(txt.splitlines(), MAX_WORDS)
+        for idx, frag in enumerate(normalized):
+            input_entries.append(
+                {
+                    "fragment": frag,
+                    "source_row": None,
+                    "source_row_index": idx + 1,
+                }
+            )
 else:
     up = st.file_uploader(
         "Last opp .txt/.csv/.tsv (én forekomst per linje eller kolonne)",
         type=["txt", "csv", "tsv"],
     )
     if up:
-        if up.type.startswith("text") or up.name.endswith(".txt"):
-            lines = normalize_lines(up.read().decode("utf-8").splitlines(), MAX_WORDS)
-        else:
-            dialect = csv.excel if up.name.endswith(".csv") else csv.excel_tab
-            reader = csv.reader(io.StringIO(up.read().decode("utf-8")), dialect=dialect)
-            cells = []
-            for row in reader:
-                for cell in row:
-                    cells.append(cell)
-            lines = normalize_lines(cells, MAX_WORDS)
+        file_bytes = up.getvalue()
+        name_lower = up.name.lower()
+        is_tsv = name_lower.endswith(".tsv") or name_lower.endswith(".tab")
+        is_csv = name_lower.endswith(".csv")
+        is_table_file = is_csv or is_tsv
 
-st.caption(
-    f"Fant {len(lines)} fragmenter (dupl/blanke kuttet). Maks {MAX_WORDS} ord per linje."
-)
+        if not is_table_file:
+            normalized = normalize_lines(
+                file_bytes.decode("utf-8", errors="ignore").splitlines(),
+                MAX_WORDS,
+            )
+            for idx, frag in enumerate(normalized):
+                input_entries.append(
+                    {
+                        "fragment": frag,
+                        "source_row": None,
+                        "source_row_index": idx + 1,
+                    }
+                )
+        else:
+            delimiter = "\t" if is_tsv else ","
+            csv_text = file_bytes.decode("utf-8", errors="ignore")
+            reader = csv.DictReader(io.StringIO(csv_text), delimiter=delimiter)
+            rows = list(reader)
+            headers = reader.fieldnames or []
+
+            if not headers:
+                st.error("Fant ingen kolonner i filen. Sjekk at CSV/TSV har header-rad.")
+            else:
+                default_idx = 0
+                for i, header in enumerate(headers):
+                    if (header or "").strip().lower() == "concordance":
+                        default_idx = i
+                        break
+
+                selected_fragment_column = st.selectbox(
+                    "Kolonne med fragmenter",
+                    options=headers,
+                    index=default_idx,
+                    key="fragment_column_select",
+                    help='Standard er "concordance" hvis den finnes.',
+                )
+
+                for idx, row in enumerate(rows):
+                    row_copy = {h: row.get(h, "") for h in headers}
+                    frag_value = row_copy.get(selected_fragment_column, "")
+                    cleaned = clamp_fragment(frag_value, MAX_WORDS)
+                    input_entries.append(
+                        {
+                            "fragment": cleaned,
+                            "source_row": row_copy,
+                            "source_row_index": idx + 1,
+                        }
+                    )
+
+                empty_count = sum(1 for entry in input_entries if not entry["fragment"])
+                if empty_count:
+                    st.warning(
+                        f"{empty_count} rad(er) mangler tekst i kolonnen «{selected_fragment_column}»."
+                    )
+
+if selected_fragment_column:
+    st.caption(
+        f"Fant {len(input_entries)} rader (kolonne «{selected_fragment_column}»). "
+        f"Originale kolonner beholdes, og fragmenter kuttes til maks {MAX_WORDS} ord for modellkallet."
+    )
+else:
+    st.caption(
+        f"Fant {len(input_entries)} fragmenter (dupl/blanke kuttet). Maks {MAX_WORDS} ord per linje."
+    )
 
 # ---------- Instruks (system) ----------
 st.subheader("2) Instruks (oppgavebeskrivelse)")
@@ -278,10 +351,10 @@ def choose_subset(all_lines: List[str]) -> List[str]:
     return [all_lines[i] for i in pick]
 
 
-to_run = choose_subset(lines)
+to_run_entries = choose_subset(input_entries)
 
-approx_in = len(to_run) * 40  # grovt anslag
-approx_out = len(to_run) * 20
+approx_in = len(to_run_entries) * 40  # grovt anslag
+approx_out = len(to_run_entries) * 20
 st.write(
     f"Grovt tokenestimat for **denne kjøringen**: "
     f"in ≈ {approx_in:,} · out ≈ {approx_out:,} · total ≈ {approx_in+approx_out:,}"
@@ -298,9 +371,19 @@ def _ts():
     return time.strftime("%Y-%m-%dT%H-%M-%S")
 
 
-def build_records(lines: List[str]) -> List[Dict[str, Any]]:
-    # id = global rekkefølge i denne kjøringen
-    return [{"id": i + 1, "fragment": frag} for i, frag in enumerate(lines)]
+def build_records(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # id = lokal rekkefølge i denne kjøringen (beholder original rekkefølge via source_row_index)
+    records: List[Dict[str, Any]] = []
+    for idx, entry in enumerate(entries):
+        records.append(
+            {
+                "id": idx + 1,
+                "fragment": entry.get("fragment", ""),
+                "source_row": entry.get("source_row"),
+                "source_row_index": entry.get("source_row_index", idx + 1),
+            }
+        )
+    return records
 
 
 def build_user_msg(batch: List[Dict[str, Any]]) -> str:
@@ -334,15 +417,35 @@ def parse_items(raw_text: str) -> List[Dict[str, Any]]:
 
 # ---------- Kjøring ----------
 run = st.button("Kjør annotering")
-if run and to_run:
+if run and to_run_entries:
     st.info("Starter kjøring…")
     all_rows: List[Dict[str, Any]] = []
-    recs = build_records(to_run)
+    recs = build_records(to_run_entries)
     total = len(recs)
     progress = st.progress(0.0)
     status = st.empty()
     done = 0
     batch_counter = 0
+    record_lookup = {rec["id"]: rec for rec in recs}
+
+    def compose_row(
+        record_id: int, fragment_value: str, record: Dict[str, Any] | None = None
+    ) -> Dict[str, Any]:
+        rec = record or record_lookup.get(record_id, {"id": record_id})
+        base = dict((rec.get("source_row") or {}))
+        idx = rec.get("source_row_index")
+        if idx is not None:
+            base["input_row_index"] = idx
+        rid = rec.get("id", record_id)
+        base["luminoner_id"] = rid
+        if "id" not in base:
+            base["id"] = rid
+        base["fragment_input"] = fragment_value
+        if "fragment" not in base:
+            base["fragment"] = fragment_value
+        base["model"] = MODEL
+        base["temperature"] = TEMP
+        return base
 
     for batch in chunks(recs, int(BATCH_SIZE)):
         batch_counter += 1
@@ -371,14 +474,11 @@ if run and to_run:
 
             for it in items:
                 rid = it.get("id")
-                row = {
-                    "id": rid,
-                    "fragment": frag_map.get(rid, ""),
-                    "model": MODEL,
-                    "temperature": TEMP,
-                    "karakteristikker": it.get("karakteristikker", []),
-                    "begrunnelse": it.get("begrunnelse", ""),
-                }
+                if rid is None:
+                    continue
+                row = compose_row(rid, frag_map.get(rid, ""))
+                row["karakteristikker"] = it.get("karakteristikker", [])
+                row["begrunnelse"] = it.get("begrunnelse", "")
                 for field in category_fields:
                     row[field["key"]] = it.get(field["key"], "")
                 all_rows.append(row)
@@ -386,28 +486,18 @@ if run and to_run:
             got_ids = {it.get("id") for it in items}
             for r in batch:
                 if r["id"] not in got_ids:
-                    row = {
-                        "id": r["id"],
-                        "fragment": r["fragment"],
-                        "model": MODEL,
-                        "temperature": TEMP,
-                        "karakteristikker": [],
-                        "begrunnelse": "manglende rad i svar",
-                    }
+                    row = compose_row(r["id"], r["fragment"], record=r)
+                    row["karakteristikker"] = []
+                    row["begrunnelse"] = "manglende rad i svar"
                     for field in category_fields:
                         row[field["key"]] = "feil"
                     all_rows.append(row)
 
         except Exception as e:
             for r in batch:
-                row = {
-                    "id": r["id"],
-                    "fragment": r["fragment"],
-                    "model": MODEL,
-                    "temperature": TEMP,
-                    "karakteristikker": [],
-                    "begrunnelse": str(e),
-                }
+                row = compose_row(r["id"], r["fragment"], record=r)
+                row["karakteristikker"] = []
+                row["begrunnelse"] = str(e)
                 for field in category_fields:
                     row[field["key"]] = "feil"
                 all_rows.append(row)
@@ -418,6 +508,15 @@ if run and to_run:
 
         if testmode:
             break
+
+    if all_rows:
+        def _row_sort_key(row: Dict[str, Any]):
+            idx = row.get("input_row_index")
+            if idx is None:
+                idx = row.get("luminoner_id", 0)
+            return (idx, row.get("luminoner_id", 0))
+
+        all_rows.sort(key=_row_sort_key)
 
     if not all_rows:
         st.warning("Ingen rader å vise.")
