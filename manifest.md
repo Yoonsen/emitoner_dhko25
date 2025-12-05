@@ -22,13 +22,18 @@
 3. Appen starter på `http://localhost:8501/`.
 
 ### Nøkkelfunksjoner
-- Dynamisk liste over kategorifelter: legg til/fjern felt, hver med navn + kommaseparerte verdier.
+- Dynamisk liste over kategorifelter: legg til/fjern felt, hver med navn + kommaseparerte verdier og modus (`Unik` vs `Liste`, sistnevnte støtter opptil tre verdier).
 - Alle verdilister får automatisk `uten-relevans`; prompten minner modellen om å bruke den når ingenting passer.
-- Instruksjonsfeltet + teknisk prompt oppdateres live basert på feltene.
-- Batchkjøring med testmodus, progressbar og eksport (JSONL/CSV).
+- Tilpassbar target-markering (default `<b>…</b>`); instruksen forklarer at fragmentene alltid har strukturen `A<start>X<slutt>B`.
+- Instruksjonsfeltet + teknisk prompt oppdateres live basert på feltene og markørene.
+- Kjøring kan gjøres på sample (med token-estimat) eller hele datasettet, med progressbar og robust JSON-parsing.
+- Resultater lastes ned som JSONL/CSV, der analysekolonnene alltid kommer før originale kildekolonner.
+
+### Dokumentasjon
+- `architecture.md` beskriver dataflyt, state, promptkonstruksjon, eksport og anbefalt API/React-oppdeling. All videreutvikling (f.eks. migrering til JavaScript/React) bør følge denne spesifikasjonen fremfor å lese direkte fra `app.py`.
 
 ### Videre arbeid (PWA-plan)
-- Bygg eget API-lag (FastAPI/Flask) som eksponerer `POST /annotate`, gjenbruker dagens Pythonlogikk.
+- Bygg eget API-lag (FastAPI/Flask) som eksponerer `POST /annotate`, gjenbruker logikken spesifisert i `architecture.md`.
 - Ny frontend (React/Vite/Next) som henter `manifest.json`, service worker, installasjon.
 - Bruker legger inn egen OpenAI-nøkkel klient-side; backend instansierer `OpenAI(api_key=...)` per request og lagrer aldri nøkkelen.
 - Valgfritt `/validate-key`-endepunkt og tydelig feilhåndtering (401/429 vs inputfeil).
