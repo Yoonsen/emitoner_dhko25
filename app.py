@@ -198,6 +198,24 @@ def detect_delimiter(raw_text: str, fallback: str = ",") -> str:
     return fallback
 
 
+def pick_sample(
+    entries: List[Dict[str, Any]], sample_size: int, shuffle: bool = True
+) -> List[Dict[str, Any]]:
+    """
+    Velg et delsett på sample_size rader. Rader beholdes i original rekkefølge.
+    """
+    total = len(entries)
+    if sample_size <= 0:
+        return []
+    if sample_size >= total:
+        return entries
+    idx = list(range(total))
+    if shuffle:
+        random.shuffle(idx)
+    chosen = sorted(idx[:sample_size])
+    return [entries[i] for i in chosen]
+
+
 input_entries: List[Dict[str, Any]] = []
 selected_fragment_column: str | None = None
 
@@ -346,39 +364,68 @@ with st.expander("Tekniske formatkrav (JSON)", expanded=False):
 # dette er faktiske systemprompt
 prompt = user_prompt.strip() + "\n\n" + TECH_PROMPT
 
-# ---------- Testmodus ----------
-st.subheader("3) Estimat, test og kjøring")
-col1, col2, col3 = st.columns([1, 1, 1.2])
-with col1:
-    testmode = st.checkbox("🧪 Testmodus (kjør liten batch først)")
-with col2:
-    n_test = st.number_input(
-        "Antall linjer i test", 5, 100, 10, 1, disabled=not testmode
+# ---------- Sample og kjøring ----------
+st.subheader("3) Estimat og kjøring")
+entries_count = len(input_entries)
+sample_disabled = entries_count == 0
+sample_max_value = entries_count or 1
+sample_default = min(10, sample_max_value)
+sample_cols = st.columns([1, 1])
+with sample_cols[0]:
+    sample_size = st.number_input(
+        "Antall linjer i sample",
+        min_value=1,
+        max_value=sample_max_value,
+        value=sample_default,
+        step=1,
+        disabled=sample_disabled,
+        help="Velg hvor mange rader som brukes når du kjører sample.",
     )
-with col3:
-    shuffle = st.checkbox(
-        "Tilfeldig utvalg i test", value=True, disabled=not testmode
+with sample_cols[1]:
+    sample_shuffle = st.checkbox(
+        "Tilfeldig sample",
+        value=True,
+        disabled=sample_disabled,
+        help="Når aktivert velges samplet tilfeldig før det sorteres.",
     )
 
+run_cols = st.columns([1, 1])
+with run_cols[0]:
+    run_all = st.button(
+        "Kjør alt", type="primary", use_container_width=True, disabled=sample_disabled
+    )
+with run_cols[1]:
+    run_sample = st.button(
+        "Kjør sample", use_container_width=True, disabled=sample_disabled
+    )
 
-def choose_subset(all_lines: List[str]) -> List[str]:
-    if not testmode or not all_lines:
-        return all_lines
-    idx = list(range(len(all_lines)))
-    if shuffle:
-        random.shuffle(idx)
-    pick = sorted(idx[: int(n_test)])
-    return [all_lines[i] for i in pick]
+entries_to_process: List[Dict[str, Any]] | None = None
+run_mode = None
+if run_all and entries_count:
+    entries_to_process = input_entries
+    run_mode = "all"
+elif run_sample and entries_count:
+    sample_target = min(int(sample_size), entries_count)
+    entries_to_process = pick_sample(input_entries, sample_target, sample_shuffle)
+    run_mode = "sample"
 
-
-to_run_entries = choose_subset(input_entries)
-
-approx_in = len(to_run_entries) * 40  # grovt anslag
-approx_out = len(to_run_entries) * 20
-st.write(
-    f"Grovt tokenestimat for **denne kjøringen**: "
-    f"in ≈ {approx_in:,} · out ≈ {approx_out:,} · total ≈ {approx_in+approx_out:,}"
-)
+if entries_count:
+    approx_all_in = entries_count * 40
+    approx_all_out = entries_count * 20
+    st.write(
+        f"Grovt tokenestimat for **alle data**: "
+        f"in ≈ {approx_all_in:,} · out ≈ {approx_all_out:,} · "
+        f"total ≈ {approx_all_in + approx_all_out:,}"
+    )
+    sample_preview = min(int(sample_size), entries_count)
+    approx_sample_in = sample_preview * 40
+    approx_sample_out = sample_preview * 20
+    st.caption(
+        f"Et sample på {sample_preview} rader vil bruke ca. "
+        f"in ≈ {approx_sample_in:,} · out ≈ {approx_sample_out:,} tokens."
+    )
+else:
+    st.caption("Ingen data ennå – last opp eller lim inn fragmenter for å starte.")
 
 # ---------- Hjelpere ----------
 def chunks(xs: List[Any], n: int):
@@ -436,9 +483,10 @@ def parse_items(raw_text: str) -> List[Dict[str, Any]]:
 
 
 # ---------- Kjøring ----------
-run = st.button("Kjør annotering")
-if run and to_run_entries:
-    st.info("Starter kjøring…")
+to_run_entries = entries_to_process or []
+if to_run_entries:
+    run_desc = "sample" if run_mode == "sample" else "alle rader"
+    st.info(f"Starter kjøring ({run_desc})…")
     all_rows: List[Dict[str, Any]] = []
     recs = build_records(to_run_entries)
     total = len(recs)
@@ -526,9 +574,6 @@ if run and to_run_entries:
         progress.progress(done / total)
         status.write(f"Ferdig: {done}/{total}")
 
-        if testmode:
-            break
-
     if all_rows:
         def _row_sort_key(row: Dict[str, Any]):
             idx = row.get("input_row_index")
@@ -578,8 +623,8 @@ if run and to_run_entries:
         csv_bytes = csv_buf.getvalue().encode("utf-8")
 
         st.success("Kjøring ferdig ✅")
-        if testmode:
-            st.info("Testmodus: dette var kun første batch.")
+        if run_mode == "sample":
+            st.info("Dette var et sample – bruk «Kjør alt» for å prosessere alle rader.")
         st.download_button(
             "Last ned JSONL",
             data=jsonl_bytes,
